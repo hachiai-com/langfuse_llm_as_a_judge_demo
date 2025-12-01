@@ -1,0 +1,87 @@
+version: '3.8'
+
+services:
+  # PostgreSQL database for Langfuse
+  postgres:
+    image: postgres:15-alpine
+    container_name: langfuse-postgres
+    environment:
+      POSTGRES_USER: langfuse
+      POSTGRES_PASSWORD: langfuse
+      POSTGRES_DB: langfuse
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U langfuse"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - langfuse-network
+
+  # Langfuse server
+  langfuse:
+    image: langfuse/langfuse:latest
+    container_name: langfuse-server
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://langfuse:langfuse@postgres:5432/langfuse
+      NEXTAUTH_SECRET: langfuse-secret-key-change-in-production
+      NEXTAUTH_URL: http://localhost:3000
+      SALT: langfuse-salt-change-in-production
+      TELEMETRY_ENABLED: "false"
+    ports:
+      - "3000:3000"
+    networks:
+      - langfuse-network
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000/api/public/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # Python application
+  # Usage:
+  #   1. Start services: docker compose up -d
+  #   2. Access Langfuse UI: http://localhost:3000 (create account and get API keys)
+  #   3. Set environment variables in .env file (OPENAI_API_KEY, LANGFUSE_SECRET_KEY, LANGFUSE_PUBLIC_KEY)
+  #   4. Run app interactively: docker compose run app python main.py
+  #   Or exec into container: docker compose exec app python main.py
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: langfuse-python-app
+    depends_on:
+      langfuse:
+        condition: service_healthy
+    environment:
+      # OpenAI API Key (required) - set in .env file
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      # Langfuse configuration - set in .env file after creating keys in Langfuse UI
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY}
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY}
+      # Use service name for internal Docker networking
+      LANGFUSE_BASE_URL: http://langfuse:3000
+      LANGFUSE_HOST: http://langfuse:3000
+    volumes:
+      - .:/app
+    stdin_open: true
+    tty: true
+    networks:
+      - langfuse-network
+    # Keep container running - use 'docker compose run app python main.py' to run interactively
+    command: tail -f /dev/null
+
+volumes:
+  postgres_data:
+
+networks:
+  langfuse-network:
+    driver: bridge
+
