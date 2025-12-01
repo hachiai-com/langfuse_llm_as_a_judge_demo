@@ -1,9 +1,8 @@
 # langfuse_llm_as_a_judge_demo
 
 Start LangFuse services:
-   docker compose up -d
-
-
+   docker compose up -d 
+   
 Run the application:
    docker compose run app python main.py
 
