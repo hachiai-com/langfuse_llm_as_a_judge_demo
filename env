@@ -1,0 +1,9 @@
+OPENAI_API_KEY=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
+
+# LANGFUSE_SECRET_KEY=sk-lf-197ef097-8ee9-44ea-a98e-6d442569a83a
+# LANGFUSE_PUBLIC_KEY=pk-lf-a25548d8-4745-42cf-b5df-552e5aa22bac
+# LANGFUSE_HOST="https://dev-langfuse.hachiai.com"
+
+LANGFUSE_SECRET_KEY=sk-lf-52ffb94a-c41c-4029-9ab1-5aef30e1882d
+LANGFUSE_PUBLIC_KEY=pk-lf-fe83d024-ff70-4ff4-89ca-070802460a8b
+LANGFUSE_HOST="https://langfuse.hachiai.com"
