@@ -3,6 +3,10 @@ import os
 import time
 from langfuse import Langfuse
 
+# >>> llm-guard imports
+from llm_guard import scan_output
+from llm_guard.output_scanners import NoRefusal, Relevance, Sensitive
+
 # load envs immediately
 load_dotenv()
 
@@ -43,6 +47,10 @@ You are an AI agent who solves user query within 40 words.
 # Match your actual evaluator name in Langfuse
 EVALUATOR_NAME = "langfuse_test_llm_as_judge"
 
+# >>> configure llm-guard scanners once (default behavior, no custom threshold)
+OUTPUT_SCANNERS = [NoRefusal(), Relevance(), Sensitive()]
+
+
 def wait_for_judge_score(trace_id, max_wait_seconds=120, poll_interval=5):
     """
     Poll Langfuse for the judge score until it appears or timeout.
@@ -78,13 +86,12 @@ def wait_for_judge_score(trace_id, max_wait_seconds=120, poll_interval=5):
                         score_value = getattr(score, 'value', None)
                         score_string = getattr(score, 'string_value', None)
                         print(f"[DEBUG] Score {idx}: name='{score_name}', value={score_value}, string_value={score_string}")
-                        #modified idx to score_value
                         # Check if this is our evaluator
                         if score_name == EVALUATOR_NAME:
                             final_score = score_value if score_value is not None else score_string
                             
                             if final_score is not None:
-                                # Convert to int if it's a string
+                                # Convert to float if it's a string
                                 try:
                                     final_score = float(final_score)
                                 except (ValueError, TypeError):
@@ -108,9 +115,10 @@ def wait_for_judge_score(trace_id, max_wait_seconds=120, poll_interval=5):
     print(f"\n[WARNING] Judge score not found after {max_wait_seconds}s and {attempts} attempts")
     return {"score": None, "found": False}
 
+
 def main():
     print("=" * 60)
-    print("Chatbot with Langfuse LLM Judge")
+    print("Chatbot with Langfuse LLM Judge + llm-guard output scanners")
     print("=" * 60)
     print(f"Evaluator: {EVALUATOR_NAME}")
     print(f"Langfuse host: {LANGFUSE_BASE_URL}")
@@ -170,25 +178,67 @@ def main():
             # Update the trace with the output
             trace.update(output=assistant_message)
             
+            # >>> run llm-guard output scanning BEFORE we decide what to show
+            sanitized_response_text, results_valid, results_score = scan_output(
+                OUTPUT_SCANNERS,
+                user_input,
+                assistant_message
+            )
+
+            # >>> compute overall validity from llm-guard's own flags (no custom threshold)
+            all_valid = all(results_valid.values())
+
+            # >>> push llm-guard results to Langfuse as custom scores
+            # numeric scores
+            for scanner_name, score_val in results_score.items():
+                try:
+                    numeric = float(score_val)
+                except (TypeError, ValueError):
+                    numeric = None
+
+                if numeric is not None:
+                    generation.score(
+                        name=f"llm_guard_{scanner_name}_score",
+                        value=numeric,
+                        comment=f"llm-guard raw score for {scanner_name}"
+                    )
+
+            # boolean valid flags
+            for scanner_name, is_valid in results_valid.items():
+                generation.score(
+                    name=f"llm_guard_{scanner_name}_valid",
+                    value=1.0 if is_valid else 0.0,
+                    comment="1 = valid according to scanner, 0 = invalid"
+                )
+
             # Flush to ensure everything is sent
             langfuse_client.flush()
             
-            # Wait a moment for the trace to be fully registered
+            # Wait a moment for the trace to be fully registered for LLM-as-judge
             time.sleep(2)
             
             # Wait for the judge score
             print(f"\n[INFO] Waiting for LLM judge evaluation (this may take up to 2 minutes)...")
             result = wait_for_judge_score(trace_id, max_wait_seconds=120, poll_interval=5)
             
+            # >>> final gating logic combines
+            #  - LLM-as-judge score
+            #  - llm-guard validity flags (NoRefusal, Relevance, Sensitive)
+            print(f"\n[INFO] llm-guard raw valid flags (from library): {results_valid}")
+            print(f"[INFO] llm-guard raw scores: {results_score}")
+
             if result["found"]:
                 score = float(result["score"])
-                print(f"\nScore: {score}")
+                print(f"\nScore (LLM-as-judge): {score}")
 
                 print("\nAssistant: ", end="")
-                if score > 0.7:
-                    print(assistant_message)
+                if score > 0.7 and all_valid:
+                    # Show sanitized text (this may strip sensitive info)
+                    print(sanitized_response_text)
+                elif not all_valid:
+                    print("We could not process your request due to safety/quality checks.")
                 else:
-                    print("We could not process your request")
+                    print("We could not process your request.")
             else:
                 print(f"\n{'='*60}")
                 print("TIMEOUT: Judge score not available")
@@ -201,13 +251,22 @@ def main():
                 print("  3. Evaluator delay too short (try 5-10 seconds)")
                 print("  4. Evaluator filter not matching traces")
                 print(f"\n  Check trace manually: {LANGFUSE_BASE_URL}/trace/{trace_id}")
-                print(f"\nShowing response anyway:")
-                print(f"Assistant: {assistant_message}")
+
+                print("\n[INFO] llm-guard still ran; results:")
+                print(f"  Raw valid flags: {results_valid}")
+                print(f"  Raw scores: {results_score}")
+
+                print("\nAssistant: ", end="")
+                if all_valid:
+                    print(sanitized_response_text)
+                else:
+                    print("We could not process your request due to safety/quality checks.")
 
         except Exception as e:
             print(f"\n[ERROR] {e}")
             import traceback
             traceback.print_exc()
+
 
 if __name__ == "__main__":
     main()
